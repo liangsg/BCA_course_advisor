@@ -3,16 +3,26 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import tiktoken
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.chat_models import ChatOpenAI
 
-if load_dotenv('.env'):
+#if load_dotenv('.env'):
    # for local development
-   OPENAI_KEY = os.getenv('OPENAI_API_KEY')
-else:
-   OPENAI_KEY = st.secrets['OPENAI_API_KEY']
+#   OPENAI_KEY = os.getenv('OPENAI_API_KEY')
+#else:
+#   OPENAI_KEY = st.secrets['OPENAI_API_KEY']
 
 # Pass the API Key to the OpenAI Client
+OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
 client = OpenAI(api_key=OPENAI_KEY)
 
+''''Test API Key
+try:
+    response = client.models.list()
+    print("API key is valid")
+except Exception as e:
+    print(f"API key error: {e}")
+'''
 def get_embedding(input, model='text-embedding-3-small'):
     response = client.embeddings.create(
         input=input,
@@ -20,6 +30,8 @@ def get_embedding(input, model='text-embedding-3-small'):
     )
     return [x.embedding for x in response.data]
 
+embedding = OpenAIEmbeddings()
+llm_QA = ChatOpenAI(model="gpt-4o-mini")
 
 # This is the "Updated" helper function for calling LLM
 def get_completion(prompt, model="gpt-4o-mini", temperature=0, top_p=1.0, max_tokens=1024, n=1, json_output=False):

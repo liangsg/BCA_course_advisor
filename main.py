@@ -2,8 +2,8 @@
 import streamlit as st
 import pandas as pd
 # from helper_functions import llm
-from logics.customer_query_handler import process_user_message
 from helper_functions.utility import check_password
+from logics.customer_query_handler import custom_qa_with_rerank
 
 # region <--------- Streamlit App Configuration --------->
 st.set_page_config(
@@ -27,11 +27,12 @@ if form.form_submit_button("Submit"):
 
     st.divider()
 
-    response, course_details = process_user_message(user_prompt)
-    st.write(response)
-
+#    response, course_details = process_user_message(user_prompt)
+#    st.write(response)
+    response = custom_qa_with_rerank(user_prompt,top_k_retrieve=3)
     st.divider()
-
-    print(course_details)
-    df = pd.DataFrame(course_details)
-    df 
+    print(type(response))
+    st.write(response['result']['text'])
+    #    print(course_details)
+    #  df = pd.DataFrame(course_details)
+    #  df

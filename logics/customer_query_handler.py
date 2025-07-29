@@ -1,139 +1,76 @@
-import os
+
 import json
-import openai
 from helper_functions import llm
+from bs4 import BeautifulSoup
+import requests
+from langchain_chroma import Chroma
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from sentence_transformers import CrossEncoder
 
-category_n_course_name = {'Programming and Development': ['Web Development Bootcamp',
-                                                          'Introduction to Cloud Computing',
-                                                          'Advanced Web Development',
-                                                          'Cloud Architecture Design'],
-                          'Data Science & AI': ['Data Science with Python',
-                                                'AI and Machine Learning for Beginners',
-                                                'Machine Learning with R',
-                                                'Deep Learning with TensorFlow'],
-                          'Marketing': ['Digital Marketing Masterclass',
-                                        'Social Media Marketing Strategy'],
-                          'Cybersecurity': ['Cybersecurity Fundamentals',
-                                            'Ethical Hacking for Beginners'],
-                          'Business and Management': ['Project Management Professional (PMP)Â® Certification Prep',
-                                                      'Agile Project Management'],
-                          'Writing and Literature': ['Creative Writing Workshop',
-                                                     'Advanced Creative Writing'],
-                          'Design': ['Graphic Design Essentials', 'UI/UX Design Fundamentals']}
+#step1 Document Loading
+file_path = 'data/specialist_diploma_programmes_urls.json'
+# Load JSON data into a list
+with open(file_path, 'r', encoding='utf-8') as f:
+    course_data = json.load(f)
 
-# Load the JSON file
-filepath = './data/courses-full.json'
-with open(filepath, 'r') as file:
-    json_string = file.read()
-    dict_of_courses = json.loads(json_string)
+def extract_text_from_url(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    # Remove scripts/styles and extract visible text
+    for script_or_style in soup(["script", "style"]):
+        script_or_style.extract()
+    return soup.get_text(separator=" ", strip=True)
 
+texts = [extract_text_from_url(item["url"]) for item in course_data]
 
-def identify_category_and_courses(user_message):
-    delimiter = "####"
+#step2 Splitting and Chunking
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.schema import Document
 
-    system_message = f"""
-    You will be provided with customer service queries. \
-    The customer service query will be enclosed in
-    the pair of {delimiter}.
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+documents = []
 
-    Decide if the query is relevant to any specific courses
-    in the Python dictionary below, which each key is a `category`
-    and the value is a list of `course_name`.
+for i, text in enumerate(texts):
+    url = course_data[i]["url"]
+    doc_chunks = splitter.create_documents([text], metadatas=[{"source": url}])
+    documents.extend(doc_chunks)
 
-    If there are any relevant course(s) found, output the pair(s) of a) `course_name` the relevant courses and b) the associated `category` into a
-    list of dictionary object, where each item in the list is a relevant course
-    and each course is a dictionary that contains two keys:
-    1) category
-    2) course_name
+#step3 Embedding
+#step4 Store in Chroma Vector Store
+vector_store = Chroma.from_documents(
+    collection_name="course_data",
+    documents=documents,
+    embedding=llm.embedding,
+)
+#print(vector_store._collection.count())
+retriever = vector_store.as_retriever(search_kwargs={"k": 10})
 
-    {category_n_course_name}
+#step5 Retrieval with Crossencoder
+cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+prompt = PromptTemplate.from_template("""
+You are Course Advisory Assistant for Singapore Building and Construction Authority (BCA) Academy Specialist Diploma courses
+Use the following context to answer the question.
+If the answer is not in the context, say "I don't know."
 
-    If are no relevant courses are found, output an empty list.
+{context}
 
-    Ensure your response contains only the list of dictionary objects or an empty list, \
-    without any enclosing tags or delimiters.
-    """
+Question: {question}
+Answer:""")
 
-    messages =  [
-        {'role':'system',
-         'content': system_message},
-        {'role':'user',
-         'content': f"{delimiter}{user_message}{delimiter}"},
-    ]
-    category_and_product_response_str = llm.get_completion_by_messages(messages)
-    category_and_product_response_str = category_and_product_response_str.replace("'", "\"")
-    category_and_product_response = json.loads(category_and_product_response_str)
-    return category_and_product_response
-    
+qa_chain = LLMChain(llm=llm.llm_QA, prompt=prompt)
 
-def get_course_details(list_of_relevant_category_n_course: list[dict]):
-    course_names_list = []
-    for x in list_of_relevant_category_n_course:
-        course_names_list.append(x.get('course_name')) # x["course_name"]
+#Reranker function
+def rerank_documents_crossencoder(query: str, docs: list[Document], top_n: int = 3):
+    pairs = [(query, doc.page_content) for doc in docs]
+    scores = cross_encoder.predict(pairs)
+    scored_docs = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    return [doc for doc, _ in scored_docs[:top_n]]
 
-    list_of_course_details = []
-    for course_name in course_names_list:
-        list_of_course_details.append(dict_of_courses.get(course_name))
-    return list_of_course_details
-
-
-def generate_response_based_on_course_details(user_message, product_details):
-    delimiter = "####"
-
-    system_message = f"""
-    Follow these steps to answer the customer queries.
-    The customer query will be delimited with a pair {delimiter}.
-
-    Step 1:{delimiter} If the user is asking about course, \
-    understand the relevant course(s) from the following list.
-    All available courses shown in the json data below:
-    {product_details}
-
-    Step 2:{delimiter} Use the information about the course to \
-    generate the answer for the customer's query.
-    You must only rely on the facts or information in the course information.
-    Your response should be as detail as possible and \
-    include information that is useful for customer to better understand the course.
-
-    Step 3:{delimiter}: Answer the customer in a friendly tone.
-    Make sure the statements are factually accurate.
-    Your response should be comprehensive and informative to help the \
-    the customers to make their decision.
-    Complete with details such rating, pricing, and skills to be learnt.
-    Use Neural Linguistic Programming to construct your response.
-
-    Use the following format:
-    Step 1:{delimiter} <step 1 reasoning>
-    Step 2:{delimiter} <step 2 reasoning>
-    Step 3:{delimiter} <step 3 response to customer>
-
-    Make sure to include {delimiter} to separate every step.
-    """
-
-    messages =  [
-        {'role':'system',
-         'content': system_message},
-        {'role':'user',
-         'content': f"{delimiter}{user_message}{delimiter}"},
-    ]
-
-    response_to_customer = llm.get_completion_by_messages(messages)
-    response_to_customer = response_to_customer.split(delimiter)[-1]
-    return response_to_customer
-
-
-def process_user_message(user_input):
-    delimiter = "```"
-
-    # Process 1: If Courses are found, look them up
-    category_n_course_name = identify_category_and_courses(user_input)
-    print("category_n_course_name : ", category_n_course_name)
-
-    # Process 2: Get the Course Details
-    course_details = get_course_details(category_n_course_name)
-
-    # Process 3: Generate Response based on Course Details
-    reply = generate_response_based_on_course_details(user_input, course_details)
-
-
-    return reply, course_details
+#Custom_qa function with reranking
+def custom_qa_with_rerank(query: str, top_k_retrieve: int = 10, top_k_rerank: int = 3):
+    retrieved_docs = retriever.get_relevant_documents(query)
+    reranked_docs = rerank_documents_crossencoder(query, retrieved_docs, top_n=top_k_rerank)
+    context = "\n\n".join([doc.page_content for doc in reranked_docs])
+    answer = qa_chain.invoke({"context": context, "question": query})
+    return {"result": answer, "source_documents": reranked_docs}
